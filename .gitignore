@@ -32,3 +32,4 @@ database.sqlite
 .cursor/
 .gemini/
 .mcp.json
+CLAUDE.md
