@@ -6,7 +6,7 @@ type = "ui_extension"
 name = "t:name"
 uid = "ac8ad56b-3ccc-b507-a99f-dbee08271f01fe1f6b61"
 handle = "complete-draft-order"
-description = "A preact POS UI extension"
+description = "Browse and complete draft orders at the register"
 
 # module: file that contains your extension’s source code
 # target: location where your extension appears in POS

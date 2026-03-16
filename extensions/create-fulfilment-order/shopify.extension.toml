@@ -1,0 +1,16 @@
+api_version = "2026-01"
+
+[[extensions]]
+uid = "dfcb21ba-fc77-b59a-8f2d-82372dd1133ab7b85339"
+type = "ui_extension"
+name = "t:name"
+handle = "create-fulfilment-order"
+description = "Create a central draft order for pickup or shipping at another location"
+
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"

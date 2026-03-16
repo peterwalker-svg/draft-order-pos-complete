@@ -129,39 +129,20 @@ const DRAFT_ORDER_UPDATE_MUTATION = `
 `;
 
 async function fetchGraphQL(query, variables = {}) {
-  const operationName = query.match(/(?:query|mutation)\s+(\w+)/)?.[1] || 'unknown';
-  console.log(`[fetchGraphQL] ${operationName} — sending request`, {variables});
-
-  let response;
-  try {
-    response = await fetch('shopify:admin/api/graphql.json', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query, variables}),
-    });
-  } catch (fetchErr) {
-    console.error(`[fetchGraphQL] ${operationName} — network/fetch error:`, fetchErr);
-    throw fetchErr;
-  }
-
-  console.log(`[fetchGraphQL] ${operationName} — response status: ${response.status}`);
+  const response = await fetch('shopify:admin/api/graphql.json', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({query, variables}),
+  });
 
   if (!response.ok) {
-    const body = await response.text().catch(() => '(could not read body)');
-    console.error(`[fetchGraphQL] ${operationName} — HTTP error ${response.status}:`, body);
     throw new Error(`HTTP error: ${response.status}`);
   }
 
   const result = await response.json();
-  console.log(`[fetchGraphQL] ${operationName} — response:`, JSON.stringify(result, null, 2));
 
   if (result.errors && !result.data) {
-    console.error(`[fetchGraphQL] ${operationName} — GraphQL errors (no data):`, result.errors);
     throw new Error(result.errors[0]?.message || 'GraphQL error');
-  }
-
-  if (result.errors) {
-    console.warn(`[fetchGraphQL] ${operationName} — partial errors (data present):`, result.errors);
   }
 
   return result;
@@ -244,10 +225,10 @@ function Extension() {
 function DraftOrderList({navigateTo}) {
   const {i18n} = shopify;
   const [allDraftOrders, setAllDraftOrders] = useState([]);
-  const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('open');
+  const [filter, setFilter] = useState('');
 
   useEffect(() => {
     loadDraftOrders();
@@ -260,7 +241,6 @@ function DraftOrderList({navigateTo}) {
       setAllDraftOrders(result.data?.draftOrders?.nodes || []);
       setError(null);
     } catch (err) {
-      console.error('[DraftOrderList] loadDraftOrders failed:', err);
       setError(err.message);
       shopify.toast.show(i18n.translate('error_loading_draft_orders'));
     } finally {
@@ -268,30 +248,11 @@ function DraftOrderList({navigateTo}) {
     }
   }
 
-  function handleContinue() {
-    if (!selected) return;
-    const draftOrder = allDraftOrders.find(d => d.id === selected);
-    if (!draftOrder) return;
+  function handleSelect(d) {
     navigateTo('DraftOrderDetails', {
-      draftOrderId: draftOrder.id,
-      draftOrderName: draftOrder.name,
+      draftOrderId: d.id,
+      draftOrderName: d.name,
     });
-  }
-
-  function switchTab(newTab) {
-    setTab(newTab);
-    setSelected(null);
-  }
-
-  function choiceLabel(d) {
-    const money = d.totalPriceSet?.shopMoney;
-    const parts = [d.name];
-    if (d.tags?.includes('pos-processing')) parts.push(`⚠ ${i18n.translate('processing_tag')}`);
-    if (d.tags?.includes('completed-via-pos')) parts.push(`✓ ${i18n.translate('completed_tag')}`);
-    if (d.customer?.displayName) parts.push(d.customer.displayName);
-    if (money) parts.push(formatCurrency(money.amount, money.currencyCode));
-    parts.push(formatDate(d.updatedAt));
-    return parts.join(' · ');
   }
 
   const openOrders = allDraftOrders.filter(
@@ -302,60 +263,87 @@ function DraftOrderList({navigateTo}) {
   );
   const visibleOrders = tab === 'open' ? openOrders : activityOrders;
 
+  const lowerFilter = filter.toLowerCase();
+  const filteredOrders = lowerFilter
+    ? visibleOrders.filter(d =>
+        d.name?.toLowerCase().includes(lowerFilter) ||
+        d.customer?.displayName?.toLowerCase().includes(lowerFilter),
+      )
+    : visibleOrders;
+
+  function statusBadge(d) {
+    if (d.tags?.includes('completed-via-pos')) return <s-badge tone="success">{i18n.translate('completed_tag')}</s-badge>;
+    if (d.tags?.includes('pos-processing')) return <s-badge tone="warning">{i18n.translate('processing_tag')}</s-badge>;
+    return null;
+  }
+
   return (
     <s-page heading={i18n.translate('modal_heading')}>
       <s-scroll-box>
-        <s-box padding="base">
-          <s-box paddingBlockEnd="base">
-            <s-segmented-button-group>
-              <s-button
-                variant={tab === 'open' ? 'primary' : undefined}
-                onClick={() => switchTab('open')}
-              >
-                {i18n.translate('tab_open')} ({openOrders.length})
-              </s-button>
-              <s-button
-                variant={tab === 'activity' ? 'primary' : undefined}
-                onClick={() => switchTab('activity')}
-              >
-                {i18n.translate('tab_activity')} ({activityOrders.length})
-              </s-button>
-            </s-segmented-button-group>
-          </s-box>
+        <s-stack direction="block" gap="base" padding="base">
+
+          <s-tabs value={tab} onChange={(e) => { setTab(e.currentTarget.value); setFilter(''); }}>
+            <s-tab-list>
+              <s-tab controls="open">{i18n.translate('tab_open')} ({openOrders.length})</s-tab>
+              <s-tab controls="activity">{i18n.translate('tab_activity')} ({activityOrders.length})</s-tab>
+            </s-tab-list>
+            <s-tab-panel id="open" />
+            <s-tab-panel id="activity" />
+          </s-tabs>
+
+          <s-search-field
+            placeholder={i18n.translate('search_placeholder')}
+            value={filter}
+            onInput={(e) => setFilter(e.currentTarget.value)}
+          />
 
           {loading ? (
-            <s-text>{i18n.translate('loading')}</s-text>
+            <s-stack direction="block" alignItems="center" gap="base" padding="large">
+              <s-spinner accessibilityLabel={i18n.translate('loading')} />
+              <s-text color="subdued">{i18n.translate('loading')}</s-text>
+            </s-stack>
           ) : error ? (
             <s-banner heading={i18n.translate('error_loading_draft_orders')} tone="critical" />
-          ) : visibleOrders.length === 0 ? (
-            <s-banner
+          ) : filteredOrders.length === 0 ? (
+            <s-empty-state
               heading={tab === 'open' ? i18n.translate('no_draft_orders') : i18n.translate('no_activity')}
-              tone="warning"
+              subheading={filter ? i18n.translate('try_different_search') : ''}
             />
           ) : (
-            <s-section heading={tab === 'open' ? i18n.translate('select_draft_order') : i18n.translate('activity_heading')}>
-              <s-box paddingBlockStart="base">
-                <s-choice-list
-                  onChange={(event) => setSelected(event.currentTarget.values[0])}
-                >
-                  {visibleOrders.map(d => (
-                    <s-choice key={d.id} value={d.id}>
-                      {choiceLabel(d)}
-                    </s-choice>
-                  ))}
-                </s-choice-list>
-              </s-box>
-            </s-section>
+            <s-stack direction="block" gap="small">
+              {filteredOrders.map(d => {
+                const money = d.totalPriceSet?.shopMoney;
+                return (
+                  <s-clickable key={d.id} onClick={() => handleSelect(d)}>
+                    <s-section>
+                      <s-stack direction="inline" gap="base" alignItems="center">
+                        <s-stack direction="block" gap="small-200">
+                          <s-text type="strong">{d.name}</s-text>
+                          <s-stack direction="inline" gap="small">
+                            {d.customer?.displayName && (
+                              <s-text type="small" color="subdued">{d.customer.displayName}</s-text>
+                            )}
+                            {money && (
+                              <s-text type="small">{formatCurrency(money.amount, money.currencyCode)}</s-text>
+                            )}
+                            <s-text type="small" color="subdued">{formatDate(d.updatedAt)}</s-text>
+                          </s-stack>
+                        </s-stack>
+                        {statusBadge(d)}
+                      </s-stack>
+                    </s-section>
+                  </s-clickable>
+                );
+              })}
+            </s-stack>
           )}
-        </s-box>
+
+        </s-stack>
       </s-scroll-box>
       <s-footer>
         <s-footer-actions>
           <s-button onClick={() => window.close()}>
             {i18n.translate('cancel')}
-          </s-button>
-          <s-button variant="primary" disabled={!selected} onClick={handleContinue}>
-            {i18n.translate('continue')}
           </s-button>
         </s-footer-actions>
       </s-footer>
@@ -447,9 +435,9 @@ function DraftOrderDetails({draftOrderId, draftOrderName, navigateTo, goBack}) {
     return (
       <s-page heading={draftOrderName || i18n.translate('draft_order_details')}>
         <s-scroll-box>
-          <s-box padding="base">
-            <s-text>{i18n.translate('loading')}</s-text>
-          </s-box>
+          <s-stack direction="block" alignItems="center" gap="base" padding="large">
+            <s-spinner accessibilityLabel={i18n.translate('loading')} />
+          </s-stack>
         </s-scroll-box>
       </s-page>
     );
@@ -459,15 +447,13 @@ function DraftOrderDetails({draftOrderId, draftOrderName, navigateTo, goBack}) {
     return (
       <s-page heading={draftOrderName || i18n.translate('draft_order_details')}>
         <s-scroll-box>
-          <s-box padding="base">
+          <s-stack direction="block" padding="base">
             <s-banner heading={i18n.translate('error_loading_details')} tone="critical" />
-          </s-box>
+          </s-stack>
         </s-scroll-box>
         <s-footer>
           <s-footer-actions>
-            <s-button onClick={goBack}>
-              {i18n.translate('back')}
-            </s-button>
+            <s-button onClick={goBack}>{i18n.translate('back')}</s-button>
           </s-footer-actions>
         </s-footer>
       </s-page>
@@ -484,114 +470,109 @@ function DraftOrderDetails({draftOrderId, draftOrderName, navigateTo, goBack}) {
   return (
     <s-page heading={draftOrder.name}>
       <s-scroll-box>
-        <s-box padding="base">
+        <s-stack direction="block" gap="base" padding="base">
+
           {isCompleted && (
-            <s-box paddingBlockEnd="base">
-              <s-banner heading={i18n.translate('completed_detail_info')} tone="info" />
-            </s-box>
+            <s-banner heading={i18n.translate('completed_detail_info')} tone="info" />
           )}
 
           {isProcessing && !isCompleted && (
-            <s-box paddingBlockEnd="base">
-              <s-banner heading={i18n.translate('processing_detail_warning')} tone="warning" />
-            </s-box>
+            <s-banner heading={i18n.translate('processing_detail_warning')} tone="warning" />
           )}
 
           {!isProcessing && !isCompleted && cartHasItems && (
-            <s-box paddingBlockEnd="base">
-              <s-banner heading={i18n.translate('cart_not_empty_warning')} tone="warning" />
-            </s-box>
+            <s-banner heading={i18n.translate('cart_not_empty_warning')} tone="warning" />
           )}
 
           {draftOrder.customer && (
             <s-section heading={i18n.translate('customer')}>
-              <s-box paddingBlockStart="small">
-                <s-text>{draftOrder.customer.displayName}</s-text>
+              <s-stack direction="block" gap="small-200">
+                <s-text type="strong">{draftOrder.customer.displayName}</s-text>
                 {draftOrder.customer.email && (
-                  <s-text>{draftOrder.customer.email}</s-text>
+                  <s-text type="small" color="subdued">{draftOrder.customer.email}</s-text>
                 )}
                 {draftOrder.customer.phone && (
-                  <s-text>{draftOrder.customer.phone}</s-text>
+                  <s-text type="small" color="subdued">{draftOrder.customer.phone}</s-text>
                 )}
-              </s-box>
+              </s-stack>
             </s-section>
           )}
 
           <s-section heading={i18n.translate('line_items')}>
-            <s-box paddingBlockStart="small">
+            <s-stack direction="block" gap="small">
               {lineItems.map(item => {
                 const unitPrice =
                   item.discountedUnitPriceSet?.shopMoney ||
                   item.originalUnitPriceSet?.shopMoney;
                 return (
-                  <s-box key={item.id} paddingBlockEnd="small">
-                    <s-text>
-                      {item.name} × {item.quantity}
-                    </s-text>
+                  <s-stack key={item.id} direction="inline" gap="base" alignItems="center">
+                    <s-stack direction="block" gap="small-200">
+                      <s-text type="strong">{item.name} x {item.quantity}</s-text>
+                      {item.variant?.sku && (
+                        <s-badge tone="neutral">SKU: {item.variant.sku}</s-badge>
+                      )}
+                      {item.custom && (
+                        <s-badge tone="info">{i18n.translate('custom_item')}</s-badge>
+                      )}
+                      {item.appliedDiscount && (
+                        <s-text type="small" color="subdued">
+                          {item.appliedDiscount.title} (-{formatCurrency(item.appliedDiscount.amountV2?.amount, currency)})
+                        </s-text>
+                      )}
+                    </s-stack>
                     {unitPrice && (
-                      <s-text>
-                        {formatCurrency(unitPrice.amount, unitPrice.currencyCode)} {i18n.translate('each')}
-                      </s-text>
+                      <s-text>{formatCurrency(unitPrice.amount, unitPrice.currencyCode)}</s-text>
                     )}
-                    {item.variant?.sku && (
-                      <s-text>SKU: {item.variant.sku}</s-text>
-                    )}
-                    {item.custom && (
-                      <s-text>({i18n.translate('custom_item')})</s-text>
-                    )}
-                    {item.appliedDiscount && (
-                      <s-text>
-                        {i18n.translate('discount')}: {item.appliedDiscount.title}{' '}
-                        (-{formatCurrency(item.appliedDiscount.amountV2?.amount, currency)})
-                      </s-text>
-                    )}
-                  </s-box>
+                  </s-stack>
                 );
               })}
-            </s-box>
+            </s-stack>
           </s-section>
 
           {draftOrder.note2 && (
             <s-section heading={i18n.translate('note')}>
-              <s-box paddingBlockStart="small">
-                <s-text>{draftOrder.note2}</s-text>
-              </s-box>
+              <s-text color="subdued">{draftOrder.note2}</s-text>
             </s-section>
           )}
 
           <s-section heading={i18n.translate('totals')}>
-            <s-box paddingBlockStart="small">
+            <s-stack direction="block" gap="small-200">
               {subtotal && (
-                <s-text>
-                  {i18n.translate('subtotal')}: {formatCurrency(subtotal.amount, subtotal.currencyCode)}
-                </s-text>
+                <s-stack direction="inline" gap="base">
+                  <s-text color="subdued">{i18n.translate('subtotal')}</s-text>
+                  <s-text>{formatCurrency(subtotal.amount, subtotal.currencyCode)}</s-text>
+                </s-stack>
               )}
               {discount && (
-                <s-text>
-                  {i18n.translate('discount')}: -{formatCurrency(discount.amountV2?.amount, currency)}{' '}
-                  ({discount.title})
-                </s-text>
+                <s-stack direction="inline" gap="base">
+                  <s-text color="subdued">{i18n.translate('discount')}</s-text>
+                  <s-text>-{formatCurrency(discount.amountV2?.amount, currency)} ({discount.title})</s-text>
+                </s-stack>
               )}
               {tax && parseFloat(tax.amount) > 0 && (
-                <s-text>
-                  {i18n.translate('tax')}: {formatCurrency(tax.amount, tax.currencyCode)}
-                </s-text>
+                <s-stack direction="inline" gap="base">
+                  <s-text color="subdued">{i18n.translate('tax')}</s-text>
+                  <s-text>{formatCurrency(tax.amount, tax.currencyCode)}</s-text>
+                </s-stack>
               )}
               {total && (
-                <s-text>
-                  {i18n.translate('total')}: {formatCurrency(total.amount, total.currencyCode)}
-                </s-text>
+                <>
+                  <s-divider />
+                  <s-stack direction="inline" gap="base">
+                    <s-text type="strong">{i18n.translate('total')}</s-text>
+                    <s-text type="strong">{formatCurrency(total.amount, total.currencyCode)}</s-text>
+                  </s-stack>
+                </>
               )}
-            </s-box>
+            </s-stack>
           </s-section>
-        </s-box>
+
+        </s-stack>
       </s-scroll-box>
       <s-footer>
         <s-footer-actions>
           {isCompleted ? (
-            <s-button onClick={goBack}>
-              {i18n.translate('back')}
-            </s-button>
+            <s-button onClick={goBack}>{i18n.translate('back')}</s-button>
           ) : isProcessing ? (
             <>
               <s-button disabled={releasing} onClick={handleRelease}>
@@ -603,9 +584,7 @@ function DraftOrderDetails({draftOrderId, draftOrderName, navigateTo, goBack}) {
             </>
           ) : (
             <>
-              <s-button onClick={goBack}>
-                {i18n.translate('back')}
-              </s-button>
+              <s-button onClick={goBack}>{i18n.translate('back')}</s-button>
               <s-button variant="primary" disabled={tapped} onClick={handleLoadIntoCart}>
                 {i18n.translate('load_into_cart')}
               </s-button>
@@ -637,7 +616,6 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
       const draftOrder = result.data?.draftOrder;
       if (!draftOrder) throw new Error(i18n.translate('draft_order_not_found'));
 
-      // Release inventory reservation + tag as pos-processing
       setStatus(i18n.translate('releasing_inventory'));
       const currentTags = [...(draftOrder.tags || [])];
       if (!currentTags.includes('pos-processing')) {
@@ -656,20 +634,18 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
         throw new Error(updateErrors[0].message || 'Failed to update draft order');
       }
 
-      // Clear current cart
       setStatus(i18n.translate('clearing_cart'));
       await cart.clearCart();
 
-      // Set note immediately after clearing — bulkCartUpdate replaces the entire
-      // cart state, so it must run while the cart is still empty to avoid wiping
-      // line items added later.
       if (draftOrder.note2) {
         setStatus(i18n.translate('setting_note'));
-        // @ts-ignore -- partial update; API accepts note-only despite types requiring full CartUpdateInput
-        await cart.bulkCartUpdate({note: draftOrder.note2});
+        try {
+          await cart.bulkCartUpdate({note: draftOrder.note2});
+        } catch {
+          // note-only bulkCartUpdate may be rejected on some API versions
+        }
       }
 
-      // Set customer
       if (draftOrder.customer?.id) {
         setStatus(i18n.translate('setting_customer'));
         const numericId = extractNumericId(draftOrder.customer.id);
@@ -678,7 +654,6 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
         }
       }
 
-      // Add line items
       const lineItems = draftOrder.lineItems?.nodes || [];
       setStatus(String(i18n.translate('adding_line_items', {count: lineItems.length})));
       const failedItems = [];
@@ -715,7 +690,6 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
             );
           }
         } catch (itemErr) {
-          console.warn(`[LoadingScreen] Failed to add "${item.name}":`, itemErr);
           failedItems.push(item.name);
         }
       }
@@ -727,14 +701,12 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
         shopify.toast.show(`${failedItems.length} item(s) skipped (not available on POS)`);
       }
 
-      // Track draft order in cart properties → becomes order note_attributes
       setStatus(i18n.translate('setting_properties'));
       await cart.addCartProperties({
         _draft_order_id: draftOrderId,
         _draft_order_name: draftOrder.name,
       });
 
-      // Apply cart-level discount
       if (draftOrder.appliedDiscount) {
         setStatus(i18n.translate('applying_discount'));
         const disc = draftOrder.appliedDiscount;
@@ -754,7 +726,6 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
 
       setTimeout(() => window.close(), 800);
     } catch (err) {
-      console.error('Error loading draft order into cart:', err);
       setError(err.message || i18n.translate('error_loading_cart'));
     }
   }
@@ -767,17 +738,14 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
     return (
       <s-page heading={draftOrderName || i18n.translate('loading_cart')}>
         <s-scroll-box>
-          <s-box padding="base">
-            <s-banner heading={i18n.translate('error_loading_cart')} tone="critical">
-              <s-text>{error}</s-text>
-            </s-banner>
-          </s-box>
+          <s-stack direction="block" padding="base" gap="base">
+            <s-banner heading={i18n.translate('error_loading_cart')} tone="critical" />
+            <s-text color="subdued">{error}</s-text>
+          </s-stack>
         </s-scroll-box>
         <s-footer>
           <s-footer-actions>
-            <s-button onClick={goBack}>
-              {i18n.translate('back')}
-            </s-button>
+            <s-button onClick={goBack}>{i18n.translate('back')}</s-button>
             <s-button
               variant="primary"
               onClick={() => {
@@ -796,9 +764,16 @@ function LoadingScreen({draftOrderId, draftOrderName, goBack}) {
   return (
     <s-page heading={draftOrderName || i18n.translate('loading_cart')}>
       <s-scroll-box>
-        <s-box padding="base">
-          <s-text>{done ? i18n.translate('done') : status}</s-text>
-        </s-box>
+        <s-stack direction="block" alignItems="center" gap="base" padding="large">
+          {done ? (
+            <s-text type="strong" color="subdued">{i18n.translate('done')}</s-text>
+          ) : (
+            <>
+              <s-spinner accessibilityLabel={status} />
+              <s-text color="subdued">{status}</s-text>
+            </>
+          )}
+        </s-stack>
       </s-scroll-box>
     </s-page>
   );
